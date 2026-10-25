@@ -1,0 +1,29 @@
+# dsh-java-dev plugin entry — inserts one row into the DSH plugin loader.
+#
+# Nothing here is machine specific: tool discovery starts automatically on first
+# load, uses environment variables / PATH / standard install locations / drive
+# roots, and stores the result in the user's cache directory
+# (e.g. %LOCALAPPDATA%\dsh-java-dev\discovery.json on Windows).
+- insert:
+    - id: java-dev
+      name: dsh-java-dev
+      config:
+        # Extra directories to scan, on top of the automatic search.
+        # Leave empty unless your tools live somewhere unusual.
+        toolRoots: []
+        # Search for JDK / Gradle / Android SDK / FFmpeg / LWJGL / IDEA on startup.
+        autoDiscover: true
+        # Also scan drive roots (Windows) in addition to standard install locations.
+        scanDrives: true
+        # Deeper, slower scan with a larger walk budget.
+        deepScan: false
+        # How long a stored discovery result stays valid, in ms (default 6 h).
+        cacheTtlMs: 21600000
+        # Optional overrides for the cache location / file:
+        # cacheDir: "D:/cache/dsh-java-dev"
+        # cacheFile: "D:/cache/dsh-java-dev/discovery.json"
+        # Auto-fix mode: 'safe' (default), 'all', 'off'
+        # 'safe' = only rules with a unique deterministic fix
+        autoFix: safe
+        # Use the IDEA command line formatter if available (format.bat / format.sh)
+        useIdeaFormatter: true

@@ -1,0 +1,9 @@
+node_modules/
+*.log
+*.local
+.cache/
+discovery.json
+dist/
+.DS_Store
+Thumbs.db
+*.tmp

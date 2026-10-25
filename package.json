@@ -1,0 +1,28 @@
+{
+  "name": "dsh-java-dev",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Java efficient development plugin for DeepSeek Harness",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "core",
+    "tools",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
