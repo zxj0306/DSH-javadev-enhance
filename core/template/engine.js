@@ -352,6 +352,21 @@ export function applyTemplate(content, ops = {}, context = {}) {
     const spec = parseTypeSpec(kind, ops[kind]);
     if (Array.isArray(spec.fields)) spec.fields = spec.fields.map(normalizeField);
     if (Array.isArray(spec.members)) spec.members = spec.members.map(normalizeField);
+    // Dedup: if a top-level type with the same name and kind already exists,
+    // skip creation so member ops below add to the existing type instead.
+    const dupType = parsed.types.find(
+      (t) => isTopLevel(t, parsed) && t.keyword === kind && t.name === spec.name
+    );
+    if (dupType) continue;
+    // Give non-record fields a default 'private' modifier so standalone class
+    // specs behave the same as presets (e.g. pojo uses fieldSpecs with ['private']).
+    if (kind !== 'record' && Array.isArray(spec.fields)) {
+      spec.fields = spec.fields.map((f) => {
+        const nf = normalizeField(f);
+        if (!nf.modifiers) nf.modifiers = ['private'];
+        return nf;
+      });
+    }
     const generated = generateType(kind, spec, working, parsed);
     if (working.trim()) {
       working = working.replace(/\n*$/, '') + '\n\n' + generated.declaration + '\n';
@@ -405,11 +420,14 @@ export function applyTemplate(content, ops = {}, context = {}) {
 registerTemplate('fields', (params, content, parsed) => {
   const type = primaryType(parsed);
   if (!type) return { content, description: 'No type to add fields to', imports: [] };
+  const existing = new Set(parsed.fields.filter((f) => f.owner === type.name).map((f) => f.name));
   const fields = (Array.isArray(params) ? params : [params]).map(normalizeField);
-  const text = fields.map(renderField).join('\n');
+  const toAdd = fields.filter((f) => !existing.has(f.name));
+  if (!toAdd.length) return { content, description: 'No new fields to add', imports: [] };
+  const text = toAdd.map(renderField).join('\n');
   return {
     content: insertAtBodyStart(content, type, text),
-    description: `Add ${fields.length} field(s)`,
+    description: `Add ${toAdd.length} field(s)`,
     imports: []
   };
 });
@@ -417,11 +435,14 @@ registerTemplate('fields', (params, content, parsed) => {
 registerTemplate('methods', (params, content, parsed) => {
   const type = primaryType(parsed, ['class', 'enum', 'interface']);
   if (!type) return { content, description: 'No type to add methods to', imports: [] };
+  const existing = new Set(parsed.methods.filter((m) => m.owner === type.name).map((m) => m.name));
   const methods = Array.isArray(params) ? params : [params];
-  const text = methods.map(renderMethod).join('\n\n');
+  const toAdd = methods.filter((m) => !existing.has(m.name));
+  if (!toAdd.length) return { content, description: 'No new methods to add', imports: [] };
+  const text = toAdd.map(renderMethod).join('\n\n');
   return {
     content: insertInBody(content, type, text),
-    description: `Add ${methods.length} method(s)`,
+    description: `Add ${toAdd.length} method(s)`,
     imports: []
   };
 });
@@ -430,19 +451,30 @@ registerTemplate('constructors', (params, content, parsed) => {
   const type = primaryType(parsed, ['class']);
   if (!type) return { content, description: 'No class to add constructors to', imports: [] };
   const ctors = Array.isArray(params) ? params : [params];
+  const existing = new Set(
+    parsed.methods
+      .filter((m) => m.owner === type.name && m.isConstructor)
+      .map((m) => m.params.map((p) => p.trim()).join(','))
+  );
   const fields = fieldsOf(parsed, type);
-  const text = ctors.map((ctor) => {
-    let body = ctor.body;
-    if (body === undefined) {
-      const ctorParams = ctor.params || fields.map((f) => ({ type: f.type, name: f.name }));
-      body = ctorParams.map((p) => {
-        const name = Array.isArray(p) ? p[1] : p.name;
-        return `this.${name} = ${name};`;
-      }).join('\n');
-      return renderConstructor(type.name, { ...ctor, params: ctorParams, body });
-    }
-    return renderConstructor(type.name, ctor);
-  }).join('\n\n');
+  const text = ctors
+    .filter((ctor) => {
+      const sig = (ctor.params || []).map((p) => (Array.isArray(p) ? p[1] : p.name)).join(',');
+      return !existing.has(sig);
+    })
+    .map((ctor) => {
+      let body = ctor.body;
+      if (body === undefined) {
+        const ctorParams = ctor.params || fields.map((f) => ({ type: f.type, name: f.name }));
+        body = ctorParams.map((p) => {
+          const name = Array.isArray(p) ? p[1] : p.name;
+          return `this.${name} = ${name};`;
+        }).join('\n');
+        return renderConstructor(type.name, { ...ctor, params: ctorParams, body });
+      }
+      return renderConstructor(type.name, ctor);
+    }).join('\n\n');
+  if (!text) return { content, description: 'No new constructors to add', imports: [] };
   return {
     content: insertInBody(content, type, text),
     description: `Add ${ctors.length} constructor(s)`,
@@ -453,9 +485,12 @@ registerTemplate('constructors', (params, content, parsed) => {
 registerTemplate('builder', (params, content, parsed) => {
   const type = primaryType(parsed, ['class', 'record']);
   if (!type) return { content, description: 'No class to add builder to', imports: [] };
+  const builderName = ((params && params.className) || type.name) + 'Builder';
+  if (parsed.types.some((t) => t.name === builderName)) {
+    return { content, description: `Builder ${builderName} already present`, imports: [] };
+  }
   const fields = (params && params.fields ? params.fields : fieldsOf(parsed, type)).map(normalizeField);
   const className = (params && params.className) || type.name;
-  const builderName = className + 'Builder';
   const isRecord = type.keyword === 'record';
   const buildExpr = isRecord
     ? `new ${className}(${fields.map((f) => f.name).join(', ')})`
@@ -500,6 +535,10 @@ registerTemplate('builder', (params, content, parsed) => {
 registerTemplate('equalsHashCode', (params, content, parsed) => {
   const type = primaryType(parsed);
   if (!type) return { content, description: 'No type for equals/hashCode', imports: [] };
+  const existing = new Set(parsed.methods.filter((m) => m.owner === type.name).map((m) => m.name));
+  if (existing.has('equals') && existing.has('hashCode')) {
+    return { content, description: 'equals/hashCode already present', imports: [] };
+  }
   const allFields = fieldsOf(parsed, type);
   const requested = params && Array.isArray(params.fields) ? new Set(params.fields) : null;
   const fields = allFields
@@ -541,6 +580,8 @@ registerTemplate('equalsHashCode', (params, content, parsed) => {
 registerTemplate('toString', (params, content, parsed) => {
   const type = primaryType(parsed);
   if (!type) return { content, description: 'No type for toString', imports: [] };
+  const existing = new Set(parsed.methods.filter((m) => m.owner === type.name).map((m) => m.name));
+  if (existing.has('toString')) return { content, description: 'toString already present', imports: [] };
   const fields = (params && params.fields ? params.fields.map((f) => (typeof f === 'string' ? { name: f } : f)) : fieldsOf(parsed, type));
   const names = fields.map((f) => f.name).filter(Boolean);
   const lines = [];
@@ -563,8 +604,11 @@ registerTemplate('toString', (params, content, parsed) => {
 registerTemplate('logger', (params, content, parsed) => {
   const type = primaryType(parsed, ['class', 'enum']);
   if (!type) return { content, description: 'No type to add logger to', imports: [] };
-  const framework = (params && params.framework) || 'slf4j';
   const fieldName = (params && params.fieldName) || 'log';
+  if (parsed.fields.some((f) => f.owner === type.name && f.name === fieldName)) {
+    return { content, description: `Logger field ${fieldName} already present`, imports: [] };
+  }
+  const framework = (params && params.framework) || 'slf4j';
   const isStatic = !params || params.static !== false;
   const imports = [];
   let decl;
@@ -724,10 +768,12 @@ registerTemplate('javadoc', (params, content, parsed) => {
 registerTemplate('singleton', (params, content, parsed) => {
   const type = primaryType(parsed, ['class']);
   if (!type) return { content, description: 'No class for singleton', imports: [] };
-  if (new RegExp(`\\bgetInstance\\s*\\(`).test(content) && content.includes('INSTANCE')) {
+  const fieldName = (params && params.fieldName) || 'INSTANCE';
+  const existing = new Set(parsed.methods.filter((m) => m.owner === type.name).map((m) => m.name));
+  const hasInstanceField = parsed.fields.some((f) => f.owner === type.name && f.name === fieldName);
+  if (existing.has('getInstance') || hasInstanceField) {
     return { content, description: 'Singleton already present', imports: [] };
   }
-  const fieldName = (params && params.fieldName) || 'INSTANCE';
   const text = [
     `private static final ${type.name} ${fieldName} = new ${type.name}();`,
     '',

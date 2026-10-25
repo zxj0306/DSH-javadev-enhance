@@ -714,6 +714,66 @@ describe('template presets (minimal intents)', () => {
       assert(out.includes(needle), `${preset} output missing ${needle}\n${out}`);
     }
   });
+
+  it('pojo preset is idempotent (no duplicate type or members)', () => {
+    const first = gen({ preset: 'pojo', name: 'User', fields: [['Long', 'id'], ['String', 'name']] });
+    const second = applyTemplate(first, { intent: 'pojo', name: 'User', fields: [['Long', 'id'], ['String', 'name']] },
+      { parsed: parseJavaSource(first) }).content;
+    // Only one public class User
+    assert.strictEqual((second.match(/public class User/g) || []).length, 1, 'duplicate class\n' + second);
+    // Fields not duplicated
+    assert.strictEqual((second.match(/private Long id;/g) || []).length, 1, 'duplicate field id\n' + second);
+    assert.strictEqual((second.match(/private String name;/g) || []).length, 1, 'duplicate field name\n' + second);
+    // Accessors/value methods not duplicated
+    assert.strictEqual((second.match(/public Long getId\(\)/g) || []).length, 1, 'duplicate getter\n' + second);
+    assert.strictEqual((second.match(/public void setName\(String name\)/g) || []).length, 1, 'duplicate setter\n' + second);
+    assert.strictEqual((second.match(/public boolean equals\(Object obj\)/g) || []).length, 1, 'duplicate equals\n' + second);
+    assert.strictEqual((second.match(/public int hashCode\(\)/g) || []).length, 1, 'duplicate hashCode\n' + second);
+    assert.strictEqual((second.match(/public String toString\(\)/g) || []).length, 1, 'duplicate toString\n' + second);
+  });
+
+  it('fields/methods/constructors are idempotent on existing type', () => {
+    const once = applyTemplate('', { class: { name: 'A', fields: [{ type: 'String', name: 'name', modifiers: ['private'] }] },
+      methods: [{ name: 'doWork', returnType: 'void', body: '' }] },
+      { parsed: parseJavaSource('') }).content;
+    const twice = applyTemplate(once, { fields: [{ type: 'String', name: 'name', modifiers: ['private'] }],
+      methods: [{ name: 'doWork', returnType: 'void', body: '' }] },
+      { parsed: parseJavaSource(once) }).content;
+    assert.strictEqual((twice.match(/private String name;/g) || []).length, 1, 'duplicate field\n' + twice);
+    assert.strictEqual((twice.match(/void doWork\(\)/g) || []).length, 1, 'duplicate method\n' + twice);
+  });
+
+  it('intent class plus top-level ops.class merges without duplicate type', () => {
+    // Intent alone generates a public class; adding a same-name class op should not
+    // create a second type, it should fold members into the existing one.
+    const out = applyTemplate('', { intent: 'pojo', name: 'Cfg', fields: [{ type: 'String', name: 'key', modifiers: ['private'] }] },
+      { parsed: parseJavaSource('') }).content;
+    assert.strictEqual((out.match(/public class Cfg/g) || []).length, 1, 'duplicate class Cfg\n' + out);
+    assert(out.includes('private String key;'), 'missing field key\n' + out);
+    // Re-applying the same intent must not duplicate anything.
+    const twice = applyTemplate(out, { intent: 'pojo', name: 'Cfg', fields: [{ type: 'String', name: 'key', modifiers: ['private'] }] },
+      { parsed: parseJavaSource(out) }).content;
+    assert.strictEqual((twice.match(/public class Cfg/g) || []).length, 1, 'second application duplicated class\n' + twice);
+    assert.strictEqual((twice.match(/private String key;/g) || []).length, 1, 'second application duplicated field\n' + twice);
+  });
+
+  it('singleton/toString/equalsHashCode are idempotent', () => {
+    let src = applyTemplate('', { class: { name: 'Svc' }, singleton: { name: 'Svc' } },
+      { parsed: parseJavaSource('') }).content;
+    src = applyTemplate(src, { singleton: { name: 'Svc' } }, { parsed: parseJavaSource(src) }).content;
+    assert.strictEqual((src.match(/public static Svc getInstance\(\)/g) || []).length, 1, 'duplicate getInstance\n' + src);
+
+    src = applyTemplate('', { class: { name: 'Val', fields: [{ type: 'String', name: 'x', modifiers: ['private'] }] }, toString: {} },
+      { parsed: parseJavaSource('') }).content;
+    src = applyTemplate(src, { toString: {} }, { parsed: parseJavaSource(src) }).content;
+    assert.strictEqual((src.match(/public String toString\(\)/g) || []).length, 1, 'duplicate toString\n' + src);
+
+    src = applyTemplate('', { class: { name: 'Eq', fields: [{ type: 'String', name: 'x', modifiers: ['private'] }] }, equalsHashCode: {} },
+      { parsed: parseJavaSource('') }).content;
+    src = applyTemplate(src, { equalsHashCode: {} }, { parsed: parseJavaSource(src) }).content;
+    assert.strictEqual((src.match(/public boolean equals\(Object obj\)/g) || []).length, 1, 'duplicate equals\n' + src);
+    assert.strictEqual((src.match(/public int hashCode\(\)/g) || []).length, 1, 'duplicate hashCode\n' + src);
+  });
 });
 
 describe('import safety', () => {
